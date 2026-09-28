@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cờ Vua Offline — 3 cấp độ AI</title>
+<style>
+:root{--bg:#111827;--panel:#1f2937;--text:#f3f4f6;--muted:#9ca3af;--light:#f0d9b5;--dark:#b58863;--sel:#f6d365;--hint:#77a85d;--check:#d95d5d}
+*{box-sizing:border-box} body{margin:0;background:linear-gradient(135deg,#0b1020,#182235);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}
+.wrap{max-width:1050px;margin:auto;padding:20px}.top{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap}
+h1{font-size:clamp(22px,4vw,34px);margin:0}.sub{color:var(--muted);margin-top:4px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;background:var(--panel);padding:12px;border-radius:14px}
+select,button{border:0;border-radius:10px;padding:10px 13px;font-weight:700;background:#374151;color:white}
+button{cursor:pointer}button:hover{filter:brightness(1.12)}
+.layout{display:grid;grid-template-columns:minmax(280px,720px) 270px;gap:18px;margin-top:18px}
+.board{width:min(90vw,720px);aspect-ratio:1;display:grid;grid-template-columns:repeat(8,1fr);border:8px solid #2a2119;border-radius:8px;box-shadow:0 20px 50px #0008;overflow:hidden}
+.sq{position:relative;display:flex;align-items:center;justify-content:center;font-size:clamp(30px,7vw,68px);user-select:none;cursor:pointer}
+.light{background:var(--light)}.dark{background:var(--dark)}
+.sq.selected{box-shadow:inset 0 0 0 5px var(--sel)}.sq.hint:after{content:"";width:22%;height:22%;border-radius:50%;background:#5b8d4a99;position:absolute}
+.sq.capture:after{content:"";position:absolute;inset:8%;border:5px solid #77a85dcc;border-radius:50%}
+.sq.check{background:var(--check)!important}.piece{filter:drop-shadow(1px 2px 1px #0008);line-height:1}
+.coord{position:absolute;font-size:10px;font-weight:800;opacity:.7;bottom:3px;left:4px}.dark .coord{color:#f6e7c8}
+.panel{background:#172033;border-radius:16px;padding:16px;box-shadow:0 10px 35px #0005;height:max-content}
+.status{font-size:18px;font-weight:800;margin-bottom:12px}.box{padding:11px;background:#111827;border-radius:11px;margin:9px 0;color:#d1d5db}
+.moves{max-height:280px;overflow:auto;font-family:ui-monospace,monospace;font-size:13px;line-height:1.7}
+.badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#374151;font-size:12px}.note{color:var(--muted);font-size:12px;line-height:1.5}
+@media(max-width:850px){.layout{grid-template-columns:1fr}.board{margin:auto}.panel{width:min(90vw,720px);margin:auto}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div><h1>♟ Cờ Vua Offline</h1><div class="sub">3 cấp độ AI • Không cần Internet sau khi tải trang</div></div>
+    <div class="controls">
+      <label>Độ khó <select id="level"><option value="1">1 — Dễ</option><option value="2">2 — Trung bình</option><option value="3">3 — Khó</option></select></label>
+      <label>Bạn chơi <select id="side"><option value="w">Trắng</option><option value="b">Đen</option></select></label>
+      <button id="new">Ván mới</button><button id="undo">Đi lại</button>
+    </div>
+  </div>
+  <div class="layout">
+    <div id="board" class="board"></div>
+    <aside class="panel">
+      <div id="status" class="status">Lượt Trắng</div>
+      <div class="box">Cấp AI: <span id="levelText" class="badge">Dễ</span></div>
+      <div class="box">Nước đi: <span id="count">0</span></div>
+      <div class="box"><b>Lịch sử</b><div id="moves" class="moves">Chưa có nước đi.</div></div>
+      <div class="note">Chạm quân của bạn để chọn. Các ô có chấm xanh là nước đi hợp lệ. AI chạy hoàn toàn trong trình duyệt.</div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const P={
+ w:{K:"♔",Q:"♕",R:"♖",B:"♗",N:"♘",P:"♙"},
+ b:{K:"♚",Q:"♛",R:"♜",B:"♝",N:"♞",P:"♟"}
+};
+const V={P:100,N:320,B:330,R:500,Q:900,K:20000};
+const files="abcdefgh";
+let board,turn,player,ai,selected=null,hints=[],gameOver=false,history=[],states=[];
+let castling={w:{K:true,Q:true},b:{K:true,Q:true}}, ep=null;
+
+function initial(){
+ return [
+  ["bR","bN","bB","bQ","bK","bB","bN","bR"],
+  Array(8).fill("bP"),Array(8).fill(null),Array(8).fill(null),
+  Array(8).fill(null),Array(8).fill(null),Array(8).fill("wP"),
+  ["wR","wN","wB","wQ","wK","wB","wN","wR"]
+ ];
+}
+function clone(b){return b.map(r=>r.slice())}
+function color(x){return x?x[0]:null} function type(x){return x?x[1]:null}
+function inside(r,c){return r>=0&&r<8&&c>=0&&c<8}
+function opposite(s){return s==="w"?"b":"w"}
+
+function findKing(b,s){for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(b[r][c]===s+"K")return[r,c];return null}
+function attacked(b,r,c,by){
+ const pawn=by==="w"?1:-1;
+ for(const dc of [-1,1]){let rr=r+pawn,cc=c+dc;if(inside(rr,cc)&&b[rr][cc]===by+"P")return true}
+ for(const [dr,dc] of [[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]]){
+  let rr=r+dr,cc=c+dc;if(inside(rr,cc)&&b[rr][cc]===by+"N")return true
+ }
+ for(const [dr,dc] of [[1,0],[-1,0],[0,1],[0,-1]]){
+  let rr=r+dr,cc=c+dc;while(inside(rr,cc)){let p=b[rr][cc];if(p){if(p===by+"R"||p===by+"Q")return true;break}rr+=dr;cc+=dc}
+ }
+ for(const [dr,dc] of [[1,1],[1,-1],[-1,1],[-1,-1]]){
+  let rr=r+dr,cc=c+dc;while(inside(rr,cc)){let p=b[rr][cc];if(p){if(p===by+"B"||p===by+"Q")return true;break}rr+=dr;cc+=dc}
+ }
+ for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++)if(dr||dc){let rr=r+dr,cc=c+dc;if(inside(rr,cc)&&b[rr][cc]===by+"K")return true}
+ return false
+}
+function inCheck(b,s){let k=findKing(b,s);return !k||attacked(b,k[0],k[1],opposite(s))}
+
+function pseudo(b,s,includeCastle=true){
+ const out=[];
+ for(let r=0;r<8;r++)for(let c=0;c<8;c++){
+  let p=b[r][c];if(!p||color(p)!==s)continue;let t=type(p);
+  const add=(rr,cc,extra={})=>{if(inside(rr,cc)&&(!b[rr][cc]||color(b[rr][cc])!==s)&&type(b[rr][cc])!=="K")out.push({r,c,rr,cc,...extra})};
+  if(t==="P"){
+   let d=s==="w"?-1:1,start=s==="w"?6:1;
+   if(inside(r+d,c)&&!b[r+d][c]){add(r+d,c);if(r===start&&!b[r+2*d][c])add(r+2*d,c,{double:true})}
+   for(let dc of [-1,1]){let rr=r+d,cc=c+dc;if(!inside(rr,cc))continue;if(b[rr][cc]&&color(b[rr][cc])!==s&&type(b[rr][cc])!=="K")add(rr,cc,{capture:true});else if(ep&&ep.r===rr&&ep.c===cc)add(rr,cc,{enpassant:true})}
+  } else if(t==="N"){
+   for(const [dr,dc] of [[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]])add(r+dr,c+dc)
+  } else if(t==="K"){
+   for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++)if(dr||dc)add(r+dr,c+dc)
+   if(includeCastle&&!inCheck(b,s)){
+    if(castling[s].K&&!b[r][c+1]&&!b[r][c+2]&&b[r][7]===s+"R"&&!attacked(b,r,c+1,opposite(s))&&!attacked(b,r,c+2,opposite(s)))add(r,c+2,{castle:"K"});
+    if(castling[s].Q&&!b[r][c-1]&&!b[r][c-2]&&!b[r][c-3]&&b[r][0]===s+"R"&&!attacked(b,r,c-1,opposite(s))&&!attacked(b,r,c-2,opposite(s)))add(r,c-2,{castle:"Q"});
+   }
+  } else {
+   const dirs=t==="B"?[[1,1],[1,-1],[-1,1],[-1,-1]]:t==="R"?[[1,0],[-1,0],[0,1],[0,-1]]:[[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+   for(const [dr,dc] of dirs){let rr=r+dr,cc=c+dc;while(inside(rr,cc)){if(!b[rr][cc])out.push({r,c,rr,cc});else{if(color(b[rr][cc])!==s&&type(b[rr][cc])!=="K")out.push({r,c,rr,cc,capture:true});break}rr+=dr;cc+=dc}}
+  }
+ }
+ return out
+}
+function applyMove(b,m){
+ const nb=clone(b),p=nb[m.r][m.c],s=color(p),t=type(p);nb[m.r][m.c]=null;
+ if(m.enpassant)nb[m.r][m.rr]=null;
+ nb[m.rr][m.cc]=p;
+ if(t==="P"&&(m.rr===0||m.rr===7))nb[m.rr][m.cc]=s+"Q";
+ if(m.castle==="K"){nb[m.rr][5]=nb[m.rr][7];nb[m.rr][7]=null}
+ if(m.castle==="Q"){nb[m.rr][3]=nb[m.rr][0];nb[m.rr][0]=null}
+ return nb
+}
+function legalMoves(b,s){
+ return pseudo(b,s).filter(m=>!inCheck(applyMove(b,m),s))
+}
+function moveKey(m){return `${m.r}${m.c}${m.rr}${m.cc}${m.castle||""}${m.enpassant?"e":""}`}
+function san(b,m){
+ const p=b[m.r][m.c], capture=!!b[m.rr][m.cc]||m.enpassant;
+ if(m.castle==="K")return "O-O"; if(m.castle==="Q")return "O-O-O";
+ let t=type(p), name=t==="P"?"":t, dest=files[m.cc]+(8-m.rr);
+ return name+(capture?(t==="P"?files[m.c]:"")+"x":"")+dest
+}
+function makeMove(m){
+ const before={board:clone(board),turn,castling:JSON.parse(JSON.stringify(castling)),ep,history:history.slice()};
+ states.push(before);
+ const p=board[m.r][m.c],s=color(p),t=type(p);
+ const notation=san(board,m);
+ board=applyMove(board,m);
+ if(t==="K"){castling[s].K=castling[s].Q=false}
+ if(t==="R"){if(m.c===0)castling[s].Q=false;if(m.c===7)castling[s].K=false}
+ if(m.rr===0&&m.cc===0)castling.b.Q=false;if(m.rr===0&&m.cc===7)castling.b.K=false;
+ if(m.rr===7&&m.cc===0)castling.w.Q=false;if(m.rr===7&&m.cc===7)castling.w.K=false;
+ ep=null;if(t==="P"&&Math.abs(m.rr-m.r)===2)ep={r:(m.r+m.rr)/2,c:m.c};
+ history.push(notation);turn=opposite(turn);selected=null;hints=[];
+ render();
+ checkEnd();
+ if(!gameOver&&turn===ai)setTimeout(aiMove,80);
+}
+function checkEnd(){
+ const moves=legalMoves(board,turn);
+ if(!moves.length){gameOver=true;status.textContent=inCheck(board,turn)?`Chiếu hết — ${opposite(turn)==="w"?"Trắng":"Đen"} thắng!`:"Hòa — bí thế.";return}
+ if(inCheck(board,turn))status.textContent=`${turn==="w"?"Trắng":"Đen"} đang bị chiếu!`;
+ else status.textContent=`Lượt ${turn==="w"?"Trắng":"Đen"}`;
+}
+function evaluate(b){
+ let score=0;
+ const center=[[3,3],[3,4],[4,3],[4,4]];
+ for(let r=0;r<8;r++)for(let c=0;c<8;c++){let p=b[r][c];if(!p)continue;let s=color(p),t=type(p),v=V[t];let pos=0;
+  const cd=Math.abs(3.5-r)+Math.abs(3.5-c);
+  if(t==="P")pos=(3.5-cd)*5;
+  if(t==="N")pos=(3.5-cd)*12;
+  if(t==="B")pos=(3.5-cd)*8;
+  if(t==="R")pos=(3.5-cd)*2;
+  if(t==="Q")pos=(3.5-cd)*3;
+  if(center.some(x=>x[0]===r&&x[1]===c))pos+=12;
+  score+=(s==="w"?1:-1)*(v+pos);
+ }
+ // mobility / king safety
+ const wm=legalMoves(b,"w").length,bm=legalMoves(b,"b").length;
+ score+=(wm-bm)*3;
+ if(inCheck(b,"w"))score-=45;if(inCheck(b,"b"))score+=45;
+ return score
+}
+function orderMoves(b,moves){
+ return moves.slice().sort((a,bm)=>{
+  let sa=(b[a.rr][a.cc]?V[type(b[a.rr][a.cc])]:0)+V[type(b[a.r][a.c])]/20;
+  let sb=(b[bm.rr][bm.cc]?V[type(b[bm.rr][bm.cc])]:0)+V[type(b[bm.r][bm.c])]/20;
+  return sb-sa
+ })
+}
+function minimax(b,depth,alpha,beta,maximizing){
+ if(depth===0)return evaluate(b);
+ const s=maximizing?"w":"b",moves=orderMoves(b,legalMoves(b,s));
+ if(!moves.length)return inCheck(b,s)?(maximizing?-999999:999999):0;
+ if(maximizing){let best=-Infinity;for(const m of moves){let v=minimax(applyMove(b,m),depth-1,alpha,beta,false);best=Math.max(best,v);alpha=Math.max(alpha,v);if(beta<=alpha)break}return best}
+ let best=Infinity;for(const m of moves){let v=minimax(applyMove(b,m),depth-1,alpha,beta,true);best=Math.min(best,v);beta=Math.min(beta,v);if(beta<=alpha)break}return best
+}
+function aiMove(){
+ if(gameOver||turn!==ai)return;
+ const moves=legalMoves(board,ai);
+ if(!moves.length)return;
+ let chosen;
+ if(level.value==="1"){
+   const captures=moves.filter(m=>bAt(m));
+   const pool=captures.length?captures:moves;
+   chosen=pool[Math.floor(Math.random()*pool.length)];
+ }else{
+   const depth=level.value==="2"?2:3;
+   let best=ai==="w"?-Infinity:Infinity, candidates=[];
+   for(const m of orderMoves(board,moves)){
+    const v=minimax(applyMove(board,m),depth-1,-Infinity,Infinity,ai==="b");
+    if((ai==="w"&&v>best)||(ai==="b"&&v<best)){best=v;candidates=[m]}else if(v===best)candidates.push(m)
+   }
+   chosen=candidates[Math.floor(Math.random()*candidates.length)];
+ }
+ makeMove(chosen);
+}
+function bAt(m){return !!board[m.rr][m.cc]||m.enpassant}
+function render(){
+ const el=document.getElementById("board");el.innerHTML="";
+ const k=findKing(board,turn),checking=k&&inCheck(board,turn);
+ for(let r=0;r<8;r++)for(let c=0;c<8;c++){
+  const d=document.createElement("div");d.className="sq "+((r+c)%2?"dark":"light");
+  if(selected&&selected.r===r&&selected.c===c)d.classList.add("selected");
+  if(hints.some(m=>m.rr===r&&m.cc===c))d.classList.add(bAt(hints.find(m=>m.rr===r&&m.cc===c))?"capture":"hint");
+  if(checking&&k[0]===r&&k[1]===c)d.classList.add("check");
+  if((r===7))d.insertAdjacentHTML("beforeend",`<span class="coord">${files[c]}</span>`);
+  const p=board[r][c];if(p)d.insertAdjacentHTML("beforeend",`<span class="piece">${P[color(p)][type(p)]}</span>`);
+  d.onclick=()=>clickSquare(r,c);el.appendChild(d);
+ }
+ document.getElementById("count").textContent=history.length;
+ document.getElementById("moves").textContent=history.length?history.map((x,i)=>(i%2===0?`${Math.floor(i/2)+1}. ${x}`:`${x}`)).join(" "):"Chưa có nước đi.";
+ document.getElementById("levelText").textContent=level.options[level.selectedIndex].text.replace(/^.\s—\s/,"");
+}
+function clickSquare(r,c){
+ if(gameOver||turn!==player)return;
+ const p=board[r][c];
+ if(selected){
+  const m=hints.find(x=>x.rr===r&&x.cc===c);
+  if(m){makeMove(m);return}
+  if(p&&color(p)===player){selected={r,c};hints=legalMoves(board,player).filter(m=>m.r===r&&m.c===c);render();return}
+  selected=null;hints=[];render();return
+ }
+ if(p&&color(p)===player){selected={r,c};hints=legalMoves(board,player).filter(m=>m.r===r&&m.c===c);render()}
+}
+function newGame(){
+ board=initial();turn="w";player=side.value;ai=opposite(player);selected=null;hints=[];gameOver=false;history=[];states=[];castling={w:{K:true,Q:true},b:{K:true,Q:true}};ep=null;
+ render();checkEnd();if(ai==="w")setTimeout(aiMove,100);
+}
+function undo(){
+ if(!states.length)return;
+ let n=states.pop();board=n.board;turn=n.turn;castling=n.castling;ep=n.ep;history=n.history;gameOver=false;selected=null;hints=[];render();checkEnd();
+ if(turn===ai&&states.length){let n2=states.pop();board=n2.board;turn=n2.turn;castling=n2.castling;ep=n2.ep;history=n2.history;render();checkEnd()}
+}
+const level=document.getElementById("level"),side=document.getElementById("side"),status=document.getElementById("status");
+document.getElementById("new").onclick=newGame;document.getElementById("undo").onclick=undo;
+level.onchange=()=>{document.getElementById("levelText").textContent=level.options[level.selectedIndex].text.replace(/^.\s—\s/,"")};
+side.onchange=newGame;
+newGame();
+</script>
+</body>
+</html>
